@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 from tensorflow import keras
 from tqdm import tqdm
 import argparse
+import yaml
+import os
+import sys
 
 from envclass import SlimeSpace
 
@@ -17,62 +20,34 @@ from envclass import SlimeSpace
 #                                                                  #
 #------------------------------------------------------------------#
 
-# Adapted from https://github.com/woutervanheeswijk/example_continuous_control
-def construct_network(num_hidden_layers, hidden_layer_arch, input_layers, output_activation_func):
 
-    hidden_layer_list = []
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+
+# Adapted from https://github.com/woutervanheeswijk/example_continuous_control
+def construct_network(input_layers, output_activation_func):
 
     input = keras.layers.Input(shape=(input_layers,))
-
-    for i in range(num_hidden_layers):
-        if i == 0:
-            hidden_layer_list.append(keras.layers.Dense(hidden_layer_arch[i])(input))
-        else:
-            hidden_layer_list.append(keras.layers.Dense(hidden_layer_arch[i])(hidden_layer_list[-1]))
     
+    # arch1
     # hidden = keras.layers.Dense(10)(input)
 
-    mu = keras.layers.Dense(1, activation=output_activation_func)(hidden_layer_list[-1])
+    # arch2
+    hidden1 = keras.layers.Dense(20)(input)
+    hidden2 = keras.layers.Dense(15)(hidden1)
+    hidden3 = keras.layers.Dense(10)(hidden2)
+    hidden4 = keras.layers.Dense(5)(hidden3)
 
-    sigma = keras.layers.Dense(1, activation=output_activation_func)(hidden_layer_list[-1])
+    mu = keras.layers.Dense(1, activation=output_activation_func)(hidden4)
+
+    sigma = keras.layers.Dense(1, activation=output_activation_func)(hidden4)
 
     model = keras.Model(inputs=input, outputs=[mu, sigma])
 
     return model
 
-def play_one_step_multi(env, obs, model_list, loss_fn):
-    loss_list = np.zeros(len(model_list))
-    grads_list = []
-    action_list = np.zeros(len(model_list))
-
-    for p,model in enumerate(model_list):
-        
-        with tf.GradientTape() as tape:
-            # print(model(np.atleast_2d(obs[p,:,:].flatten())).numpy().shape)
-            
-            mu, sigma = model(np.atleast_2d(obs[p,:,:].flatten()))
-
-            mu = 2*np.pi*mu
-
-            action = tf.random.normal([1], mean=mu, stddev=sigma)
-            action_list[p] = action
-
-            step_loss = loss_fn(model, obs[p,:,:], action, env.step_reward[p])
-            # print(step_loss)
-            loss_list[p] = step_loss
-
-        to_be_appended_grad = tape.gradient(step_loss, model.trainable_variables)
-        grads_list.append(to_be_appended_grad)
-
-        # print(action.numpy()[0][0])
-    # print(f"Action List : {action_list}")
-    obs, reward = env._step(action_list)
-
-    return obs, reward, grads_list
-
 def play_one_step_single(env, obs, action, model, loss_fn):
     with tf.GradientTape() as tape:
-        # print(model(np.atleast_2d(obs[p,:,:].flatten())).numpy().shape)
         
         mu, sigma = model(np.atleast_2d(obs[:,:].flatten()))
 
@@ -88,25 +63,6 @@ def play_one_step_single(env, obs, action, model, loss_fn):
     grads = tape.gradient(step_loss, model.trainable_variables)
     obs, reward = env._step(action)
     return obs, reward, grads
-
-
-def play_multiple_episodes_multi(env, n_episodes, n_max_steps, model_list, loss_fn):
-    all_rewards = []
-    all_grads   = []
-
-    for episode in tqdm(range(n_episodes), desc="Episode progress:"):
-        current_rewards = []
-        current_grads = []
-        obs = env._reset()
-        for step in range(n_max_steps):
-            obs, reward, grads = play_one_step_multi(env, obs, model_list, loss_fn)
-            current_rewards.append(reward)
-            current_grads.append(grads)
-            if env._episode_ended:
-                break
-        all_rewards.append(current_rewards)
-        all_grads.append(current_grads)
-    return all_rewards, all_grads
 
 def play_multiple_episodes_single(env, init_action, n_episodes, n_max_steps, model, loss_fn):
     all_rewards = []
@@ -147,16 +103,9 @@ def user_loss_fn(model, obs, action, reward):
     if mu < 0:
         mu = 2*np.pi + mu
 
-    # print(f"Mu : {mu}, Sigma : {sigma}")
-
     l = 1/ (sigma * tf.sqrt(2*np.pi)) * tf.exp(-0.5 * ((action - mu)/sigma)**2)
 
-    # if l < 0:
-    #     L = -tf.math.log(abs(l) + 1e-5) # 1e-5 is the floor value for prob
-    # else:
     L = tf.math.log(l + 1e-5)
-
-    # print(l, L)
 
     loss = -reward * L
 
@@ -180,7 +129,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Initialize workflow for slime agents")
 
     parser.add_argument(
-        "--file", type=str, help="Input file for slime environment parameters"
+        "--input", "-I", type=str, help="Name of the simulation type from slimesetup.yml file"
+    )
+
+    parser.add_argument(
+        "--output", "-O", type=str, help="Output directory for images and saved arrays if applicable"
     )
 
     parser.add_argument(
@@ -203,13 +156,16 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--hidden_layers", type=int, help="Number of hidden layers in neural network architecture",
-        default=1
+        "--savefreq", type=int, help="Iteration frequency to save images or numpy arrays of the state",
+        default=100
     )
 
     parser.add_argument(
-        "--hidden_arch", nargs="+", default=[10],
-        help="List describing the number of neurons for each hidden layer. Creates dense layers with keras"
+        "-N", "--numpy", action="store_true", help="Save numpy arrays at provided frequency"
+    )
+
+    parser.add_argument(
+        "-P", "--plot", action='store_true', help="Save plots of state at provided frequency"
     )
 
     parser.add_argument(
@@ -220,26 +176,49 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Initialize slime environment
-    Nslime = 600
-    tmax   = 40
-    dt     = 0.01
 
-    nx     = 500
-    ny     = 250
+    with open("slimesetup.yml", "r") as f:
+        config = yaml.safe_load(f)
+        f.close()
 
-    xmax  = 2
-    ymax  = 1
-    decay = 0.001
-    vel   = 0.08
-    k     = 5e-5
+    if args.input != None:
+        simparams = config[args.input]
+    else:
+        print(f"Please provide an input simulation with --input or -I !!!")
+        sys.exit(0)
+        
+    Nslime = int(simparams["Nslime"])
+    tmax   = float(simparams["tmax"])
+    dt     = float(simparams["dt"])
 
-    alpha = 10 # Reward weight times average value
-    thresh = 40 * 3 / 81 # Need to play around with these
+    nx     = int(simparams["nx"])
+    ny     = int(simparams["ny"])
+
+    xmax  = float(simparams["xmax"])
+    ymax  = float(simparams["ymax"])
+    decay = float(simparams["decay"])
+    vel   = float(simparams["vel"])
+    k     = float(simparams["k"])
+
+    alpha = float(simparams["alpha"]) # Reward weight times average value
+    thresh = float(simparams["thresh"]) # Need to play around with these
 
     n_iterations = args.train_iters
     n_episodes_per_update = args.n_episodes
-    n_max_steps = 400
-    discount_factor = 0.95
+    n_max_steps = int(tmax/dt)-1
+    discount_factor = float(simparams["discount_factor"])
+
+    # print(n_max_steps)
+
+    if args.output != None:
+        if os.path.isdir(args.output):
+            os.chdir(args.output)
+        else:
+            os.mkdir(args.output)
+            os.chdir(args.output)
+
+    # for key in simparams.keys():
+    #     print(f"Key : {key}, Value : {simparams[key]}")
 
     env = SlimeSpace(seed=70, nx=nx, ny=ny, Nslime=Nslime, dprobe=args.dprobe,
                      xmax=xmax, ymax=ymax, decay=decay, vel=vel,
@@ -250,7 +229,7 @@ if __name__ == "__main__":
     loss_fn = user_loss_fn
     
     # SINGLE AGENT SETUP
-    model = construct_network(args.hidden_layers, args.hidden_arch, (2*args.dprobe)**2, args.activation)
+    model = construct_network((2*args.dprobe)**2, args.activation)
 
     # Initialize an action array for slimes without brain
     # action[0] denotes the slime with the brain being trained
@@ -271,6 +250,8 @@ if __name__ == "__main__":
                 for episode_index, final_rewards in enumerate(all_final_rewards)
                     for step, final_reward in enumerate(final_rewards)], axis=0
             )
+
+        print(all_final_rewards)
 
         optimizer.apply_gradients(zip(all_mean_grads, model.trainable_variables))
 
@@ -297,29 +278,15 @@ if __name__ == "__main__":
 
             env._step(action)
 
-            if iter % 50 == 0:
-                env._Visualize(plot_iter)
+            if iter % args.savefreq == 0:
+
+                if args.numpy:
+                    # print(env._state[env.ilo+1:env.ihi,env.jlo+1:env.jhi])
+                    np.save(f"STATE{str(plot_iter).zfill(4)}", env._state[env.ilo+1:env.ihi,env.jlo+1:env.jhi])
+                
+                if args.plot:
+                    env._Visualize(plot_iter)
+
                 plot_iter += 1
     else:
         pass
-
-    # Initializing the array of slime brains --> MULTI AGENT SETUP
-    # model_list = []
-
-    # print(2*dprobe, 2*dprobe)
-
-    # for n in range(Nslime):
-    #     model_list.append(construct_network(1, [10], (2*dprobe)**2, "sigmoid"))
-
-    # optimizer = keras.optimizers.Adam(learning_rate=0.01)
-    # loss_fn = user_loss_fn
-
-    # for iteration in range(n_iterations):
-    #     print(f"[STARTING] Iteration : {str(iteration).zfill(5)}")
-    #     all_rewards, all_grads = play_multiple_episodes_multi(env, n_episodes_per_update, n_max_steps, model_list, loss_fn)
-    #     all_final_rewards = discount_and_normalize_rewards(all_rewards, discount_factor)
-
-    #     for p,model in enumerate(model_list):
-    #         print(f"Grads: {len(all_grads)}")
-    #         print(f"Trainable Variables: {model.trainable_variables}")
-    #         optimizer.apply_gradients(zip(all_grads[p], model.trainable_variables))

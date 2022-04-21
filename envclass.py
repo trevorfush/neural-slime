@@ -148,9 +148,9 @@ class SlimeSpace():
             
             # Calculate average pheromone value within sight for reward
             avg_val = self.step_obs[:,:].mean()
-
+            # print(avg_val)
             # If it is near others but not too close, give reward ignoring its own trail
-            if avg_val < self.thresh and avg_val > (self.dprobe):
+            if avg_val < self.thresh and avg_val > (1/self.dprobe):
                 self.step_reward = avg_val * self.alpha
             
             # If it is above threshold, give penalty
@@ -167,7 +167,7 @@ class SlimeSpace():
             
             # Calculate average pheromone value within sight for reward
             avg_val = self.step_obs[i,:,:].mean()
-
+            
             # If it is near others but not too close, give reward ignoring its own trail
             if avg_val < self.thresh and avg_val > (self.dprobe):
                 self.step_reward[i] = avg_val * self.alpha
@@ -282,7 +282,7 @@ class SlimeSpace():
         fig = plt.figure()
     
         plt.imshow(self._state[self.ilo+1:self.ihi,self.jlo+1:self.jhi], 
-                   cmap=self.cmap, interpolation="none")
+                   cmap=self.cmap, interpolation="spline36")
         if self.cmap_on == True:
             plt.colorbar()
 
