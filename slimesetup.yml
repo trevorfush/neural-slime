@@ -21,3 +21,31 @@ standard_test:
   alpha: 10             # Reward weight
   thresh: 1.5           # Threshold for negative reward (see SlimeSpace environment)
   discount_factor: 0.95 # Training discount factor
+
+noml_test:
+  # Number of slime agents
+  Nslime: 1200
+  
+  # Grid dimensions
+  nx: 300
+  ny: 300
+
+  # Grid scale and time information
+  xmax: 1  # Largest x value (0 to xmax)
+  ymax: 1  # Largest y value (0 to ymax)
+  tmax: 40 # Max time
+  dt: 0.01 # Timestep
+
+  # Agent and trail characteristics
+  decay: 0.001 # Trail decay per iteration
+  k: 5e-5      # Trail diffusivity per iteration
+  vel: 0.08    # Agent velocity
+
+  ####################################################################
+  #       NOT RELEVANT FOR THIS TEST SETUP                           #
+  ####################################################################
+  
+  # Training constants
+  alpha: 10             # Reward weight
+  thresh: 1.5           # Threshold for negative reward (see SlimeSpace environment)
+  discount_factor: 0.95 # Training discount factor

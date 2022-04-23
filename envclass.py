@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 class SlimeSpace():
 
-    def __init__(self, seed, nx, ny, Nslime, dprobe, xmax, ymax, decay, vel, tmax, dt, k, alpha, thresh, single_slime):
+    def __init__(self, seed, nx, ny, Nslime, dprobe, xmax, ymax, decay, vel, tmax, dt, k, alpha, thresh, single_slime, no_ml):
 
         self.single = single_slime # Used for training individual model
 
@@ -25,6 +25,8 @@ class SlimeSpace():
         self.cmap = "cividis"
         self.cmap_on = False
 
+        self.no_ml = no_ml
+
         self.v = vel
 
         self.tmax = tmax
@@ -37,19 +39,26 @@ class SlimeSpace():
         self._state = np.zeros((ny+2*self.dprobe, nx+2*self.dprobe), dtype=np.float64)
 
         # MULTI AGENT LEARNING SETUP
-        if self.single == False:
+        if self.single == False and self.no_ml == False:
             self.step_reward = np.zeros(self.Nslime)
             self.step_obs    = np.zeros((self.Nslime, 2*self.dprobe, 2*self.dprobe))
 
         # SINGLE AGENT LEARNING SETUP
-        if self.single == True:
+        if self.single == True and self.no_ml == False:
             self.step_reward = 0
             self.step_obs    = np.zeros((2*self.dprobe, 2*self.dprobe))
+
+        if self.no_ml == True:
+            self.step_obs = np.zeros((self.Nslime, 3))
+            self.step_reward = 0
 
         self.ilo = self.dprobe
         self.ihi = self.ny + self.dprobe
         self.jlo = self.dprobe
         self.jhi = self.nx + self.dprobe
+
+        self.SA = 30 # Sensing angle (degrees)
+        self.RA = 45 # Rotation angle (degrees)
 
         self.alpha = alpha 
         self.thresh = thresh
@@ -64,17 +73,22 @@ class SlimeSpace():
         self.new_array = np.zeros_like(self._state)
 
         for i in range(self.Nslime):
-            
+
             x0 = np.random.uniform(self.dx, xmax)
             y0 = np.random.uniform(self.dy, ymax)
 
-            (ix, iy) = self.getGridLoc(x0, y0)[0]
-            
-            if self._state[ix, iy] != 1.0:
-                self._state[ix, iy] = 1.0
+            if (x0 - 0.5) **2 + (y0 - 0.5) ** 2 <= 0.1**2:
 
-                self.new_loc[i][0] = x0
-                self.new_loc[i][1] = y0
+                (ix, iy) = self.getGridLoc(x0, y0)[0]
+                
+                if self._state[ix, iy] != 1.0:
+                    self._state[ix, iy] = 1.0
+
+                    self.new_loc[i][0] = x0
+                    self.new_loc[i][1] = y0
+                else:
+                    i -= 1
+            
             else:
                 i -= 1
 
@@ -85,11 +99,11 @@ class SlimeSpace():
         
         # Periodic boundary conditions, keep stuff on grid
         if (ix >= self.nx+1):
-            ix = 1
+            ix = self.dprobe
             x = self.dx
 
         if (iy >= self.ny+1):
-            iy = 1
+            iy = self.dprobe
             y = self.dx
 
         if (ix <= 0):
@@ -130,6 +144,38 @@ class SlimeSpace():
             self.getObsReward(i)
 
         return self.step_obs
+
+    def getObsNoML(self, i, action):
+
+        # Find where the slime is on the grid
+        index_loc = self.getGridLoc(self.new_loc[i][0], self.new_loc[i][1])[0]
+
+        # Find cell in front and to side of slime
+        theta = action
+
+        # print(index_loc)
+
+        FC_ind_x, FC_ind_y = int(self.dprobe * np.sin(theta) + index_loc[0]), int(self.dprobe * np.cos(theta) + index_loc[1])
+        FL_ind_x, FL_ind_y = int(self.dprobe * np.sin(theta+self.SA) + index_loc[0]), int(self.dprobe * np.cos(theta+self.SA) + index_loc[1])
+        FR_ind_x, FR_ind_y = int(self.dprobe * np.sin(theta-self.SA) + index_loc[0]), int(self.dprobe * np.cos(theta-self.SA) + index_loc[1])
+        
+        if FC_ind_x >= self.nx + self.dprobe:
+            FC_ind_x -= 1
+        if FC_ind_y >= self.ny + self.dprobe:
+            FC_ind_y -= 1
+        if FL_ind_x >= self.nx + self.dprobe:
+            FL_ind_x -= 1
+        if FL_ind_y >= self.ny + self.dprobe:
+            FL_ind_y -= 1
+        if FR_ind_x >= self.nx + self.dprobe:
+            FR_ind_x -= 1
+        if FR_ind_y >= self.ny + self.dprobe:
+            FR_ind_y -= 1
+
+        self.step_obs[i][0] = self._state[FL_ind_x, FL_ind_y]
+        self.step_obs[i][1] = self._state[FC_ind_x, FC_ind_y]
+        self.step_obs[i][2] = self._state[FR_ind_x, FR_ind_y]
+
 
     def getObsReward(self, i):
         
@@ -249,17 +295,21 @@ class SlimeSpace():
         # Only need to loop over agents once :)
         for i in range(self.Nslime):
 
-            # Move the slimes according to the action, create trails
-            self._Move(i, action[i])
-
             # Get rewards and observations
             # Maybe make a separate function for this... and play around with the type of reward
             # i = 0 is designed to be the agent with the neural network in single agent learning
-            if self.single == True:
-                if i == 0:
+            if self.no_ml == False:
+                if self.single == True:
+                    if i == 0:
+                        self.getObsReward(i)
+                else:
                     self.getObsReward(i)
+            
             else:
-                self.getObsReward(i)
+                self.getObsNoML(i, action[i])
+
+            # Move the slimes according to the action, create trails
+            self._Move(i, action[i])
 
         # Decay the trails
         self._Decay()

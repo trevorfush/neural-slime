@@ -111,6 +111,31 @@ def user_loss_fn(model, obs, action, reward):
 
     return loss
 
+def getActionNoML(env, i, obs, action, stray):
+
+    F  = obs[1]
+    FL = obs[0]
+    FR = obs[2]
+
+    # if i == 0:
+    #     print(obs)
+
+    if np.random.random() < stray:
+        return np.random.random() * 2 * np.pi
+
+    if (F > FL) and (F > FR):
+        return action
+    elif (F < FL) and (F < FR):
+        return np.random.random() * 2 * np.pi
+    elif (FL < FR):
+        return action + env.RA * np.pi / 180
+    elif (FR < FL):
+        return action - env.RA * np.pi / 180
+    else:
+        return action
+
+    
+
 
 
 if __name__ == "__main__":
@@ -172,6 +197,10 @@ if __name__ == "__main__":
         "-T", "--train_only", help="Do training only (debugging purposes)", action="store_true"
     )
 
+    parser.add_argument(
+        "--noml", action="store_true", help="when flagged, ignores machine learning and does simple policy" 
+    )
+
 
     args = parser.parse_args()
 
@@ -219,62 +248,96 @@ if __name__ == "__main__":
 
     # for key in simparams.keys():
     #     print(f"Key : {key}, Value : {simparams[key]}")
-
-    env = SlimeSpace(seed=70, nx=nx, ny=ny, Nslime=Nslime, dprobe=args.dprobe,
-                     xmax=xmax, ymax=ymax, decay=decay, vel=vel,
-                     tmax=tmax, dt=dt, k=k, alpha=alpha, thresh=thresh,
-                     single_slime=True)
-
-    optimizer = keras.optimizers.Adam(learning_rate=0.01)
-    loss_fn = user_loss_fn
     
-    # SINGLE AGENT SETUP
-    model = construct_network((2*args.dprobe)**2, args.activation)
-
-    # Initialize an action array for slimes without brain
-    # action[0] denotes the slime with the brain being trained
-    action = np.random.random(Nslime) * 2 * np.pi
-    
-    print(f"\n\n\n[TRAINING] Initializing training iterations\n")
-
-    for iteration in range(n_iterations):
-        print(f"[TRAINING] Iteration : {str(iteration).zfill(5)}")
-        all_rewards, all_grads = play_multiple_episodes_single(env, action, n_episodes_per_update, n_max_steps, model, loss_fn)
-        # all_final_rewards = discount_and_normalize_rewards(all_rewards, discount_factor)
-        all_final_rewards = discount_and_normalize_rewards(all_rewards, discount_factor)
-
-        all_mean_grads = []
-        for var_index in range(len(model.trainable_variables)):
-            mean_grads = tf.reduce_mean(
-                [final_reward * all_grads[episode_index][step][var_index] 
-                for episode_index, final_rewards in enumerate(all_final_rewards)
-                    for step, final_reward in enumerate(final_rewards)], axis=0
-            )
-
-        print(all_final_rewards)
-
-        optimizer.apply_gradients(zip(all_mean_grads, model.trainable_variables))
-
-    print(f"\n\n[TRAINING] Finished training model")
-
-    if args.train_only != True:
-        print(f"\n[TESTING] Beginning analysis run to create visualizations...")
-
-        # Run it with each slime having a brain NOT for training, but for visualization:
+    if args.noml == False:
         env = SlimeSpace(seed=70, nx=nx, ny=ny, Nslime=Nslime, dprobe=args.dprobe,
                         xmax=xmax, ymax=ymax, decay=decay, vel=vel,
                         tmax=tmax, dt=dt, k=k, alpha=alpha, thresh=thresh,
-                        single_slime=False)
+                        single_slime=True)
+
+        optimizer = keras.optimizers.Adam(learning_rate=0.01)
+        loss_fn = user_loss_fn
+        
+        # SINGLE AGENT SETUP
+        model = construct_network((2*args.dprobe)**2, args.activation)
+
+        # Initialize an action array for slimes without brain
+        # action[0] denotes the slime with the brain being trained
+        action = np.random.random(Nslime) * 2 * np.pi
+        
+        print(f"\n\n\n[TRAINING] Initializing training iterations\n")
+
+        for iteration in range(n_iterations):
+            print(f"[TRAINING] Iteration : {str(iteration).zfill(5)}")
+            all_rewards, all_grads = play_multiple_episodes_single(env, action, n_episodes_per_update, n_max_steps, model, loss_fn)
+            # all_final_rewards = discount_and_normalize_rewards(all_rewards, discount_factor)
+            all_final_rewards = discount_and_normalize_rewards(all_rewards, discount_factor)
+
+            all_mean_grads = []
+            for var_index in range(len(model.trainable_variables)):
+                mean_grads = tf.reduce_mean(
+                    [final_reward * all_grads[episode_index][step][var_index] 
+                    for episode_index, final_rewards in enumerate(all_final_rewards)
+                        for step, final_reward in enumerate(final_rewards)], axis=0
+                )
+
+            print(all_final_rewards)
+
+            optimizer.apply_gradients(zip(all_mean_grads, model.trainable_variables))
+
+        print(f"\n\n[TRAINING] Finished training model")
+
+        if args.train_only != True:
+            print(f"\n[TESTING] Beginning analysis run to create visualizations...")
+
+            # Run it with each slime having a brain NOT for training, but for visualization:
+            env = SlimeSpace(seed=100, nx=nx, ny=ny, Nslime=Nslime, dprobe=args.dprobe,
+                            xmax=xmax, ymax=ymax, decay=decay, vel=vel,
+                            tmax=tmax, dt=dt, k=k, alpha=alpha, thresh=thresh,
+                            single_slime=False)
+
+            plot_iter = 0
+
+            for iter in tqdm(range(int(tmax/dt)), desc="Slime Iteration:"):
+                
+                if iter > 50:
+                    for i in range(len(action)):
+                        mu, sigma = model(np.atleast_2d(env.step_obs[i,:,:].flatten()))
+                        mu = 2*np.pi*mu
+                        action[i] = tf.random.normal([1], mean=mu, stddev=sigma)
+
+                env._step(action)
+
+                if iter % args.savefreq == 0:
+
+                    if args.numpy:
+                        # print(env._state[env.ilo+1:env.ihi,env.jlo+1:env.jhi])
+                        np.save(f"STATE{str(plot_iter).zfill(4)}", env._state[env.ilo+1:env.ihi,env.jlo+1:env.jhi])
+                    
+                    if args.plot:
+                        env._Visualize(plot_iter)
+
+                    plot_iter += 1
+        else:
+            pass
+    
+    else:
+        
+        # Initial slime orientations
+        action = np.random.random(Nslime) * 2 * np.pi
+
+        # Initialize slime space
+        env = SlimeSpace(seed=70, nx=nx, ny=ny, Nslime=Nslime, dprobe=args.dprobe,
+                            xmax=xmax, ymax=ymax, decay=decay, vel=vel,
+                            tmax=tmax, dt=dt, k=k, alpha=alpha, thresh=thresh,
+                            single_slime=False, no_ml=args.noml)
 
         plot_iter = 0
 
         for iter in tqdm(range(int(tmax/dt)), desc="Slime Iteration:"):
             
-            if iter > 50:
-                for i in range(len(action)):
-                    mu, sigma = model(np.atleast_2d(env.step_obs[i,:,:].flatten()))
-                    mu = 2*np.pi*mu
-                    action[i] = tf.random.normal([1], mean=mu, stddev=sigma)
+            for i in range(len(action)):
+                action[i] = getActionNoML(env, i, env.step_obs[i], action[i], stray=0.01)
 
             env._step(action)
 
@@ -288,5 +351,3 @@ if __name__ == "__main__":
                     env._Visualize(plot_iter)
 
                 plot_iter += 1
-    else:
-        pass
